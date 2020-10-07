@@ -20,6 +20,14 @@ import * as https from 'https';
 import { WebSocketChannel } from '../../../common/messaging/web-socket-channel';
 import { Disposable } from '../../../common/disposable';
 import { AddressInfo } from 'net';
+const {Tracer, ExplicitContext} = require('zipkin');
+const {recorder} = require('recorder/recorder');
+const ctxImpl = new ExplicitContext();
+const localServiceName = 'THEIA_BACKEND';
+// const remoteServiceName = 'RPC_CALL_BACKEND';
+const tracer = new Tracer({ctxImpl, recorder: recorder(localServiceName), localServiceName});
+// const instrumentation = new Instrumentation.HttpClient({tracer, localServiceName, remoteServiceName});
+process.hrtime = require('browser-process-hrtime');
 
 export class TestWebSocketChannel extends WebSocketChannel {
 
@@ -27,7 +35,8 @@ export class TestWebSocketChannel extends WebSocketChannel {
         server: http.Server | https.Server,
         path: string
     }) {
-        super(0, content => socket.send(content));
+        tracer.setId(tracer.createChildId());
+        super(0, content => socket.send(content), Math.floor(Math.random() * (15 + 7000 + 1)) + 15);
         const socket = new ws(`ws://localhost:${(server.address() as AddressInfo).port}${WebSocketChannel.wsPath}`);
         socket.on('error', error =>
             this.fireError(error)

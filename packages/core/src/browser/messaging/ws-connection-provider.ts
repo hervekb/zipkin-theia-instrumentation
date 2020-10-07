@@ -13,13 +13,22 @@
  *
  * SPDX-License-Identifier: EPL-2.0 OR GPL-2.0 WITH Classpath-exception-2.0
  ********************************************************************************/
-
+/* eslint-env browser */
+/* eslint-disable import/newline-after-import */
+// use higher-precision time than milliseconds
+process.hrtime = require('browser-process-hrtime');
 import { injectable, interfaces, decorate, unmanaged } from 'inversify';
 import { createWebSocketConnection, Logger, ConsoleLogger } from 'vscode-ws-jsonrpc/lib';
 import { ConnectionHandler, JsonRpcProxyFactory, JsonRpcProxy, Emitter, Event } from '../../common';
 import { WebSocketChannel } from '../../common/messaging/web-socket-channel';
 import { Endpoint } from '../endpoint';
-import ReconnectingWebSocket from 'reconnecting-websocket';
+const ReconnectingWebSocket = require('reconnecting-websocket');
+const {Annotation, Tracer, ExplicitContext} = require('zipkin');
+// const CLSContext = require('zipkin-context-cls');
+const {recorder} = require('recorder/recorder');
+const ctxImpl = new ExplicitContext();
+const localServiceName = 'browser';
+const tracer = new Tracer({ctxImpl, recorder: recorder(localServiceName), localServiceName});
 
 decorate(injectable(), JsonRpcProxyFactory);
 decorate(unmanaged(), JsonRpcProxyFactory, 0);
@@ -51,10 +60,14 @@ export class WebSocketConnectionProvider {
         return container.get(WebSocketConnectionProvider).createProxy<T>(path, arg);
     }
 
-    protected channelIdSeq = 0;
-    protected readonly socket: ReconnectingWebSocket;
+    protected channelIdSeq = 200;
+    protected indexSeq = 0;
+    id = 0;
+    index = 0;
+    protected readonly socket: WebSocket;
     protected readonly channels = new Map<number, WebSocketChannel>();
-
+    tracerIds = new Map();
+    channelIds = new Map<number, Number>();
     protected readonly onIncomingMessageActivityEmitter: Emitter<void> = new Emitter();
     public onIncomingMessageActivity: Event<void> = this.onIncomingMessageActivityEmitter.event;
 
@@ -70,9 +83,40 @@ export class WebSocketConnectionProvider {
         socket.onmessage = ({ data }) => {
             const message: WebSocketChannel.Message = JSON.parse(data);
             const channel = this.channels.get(message.id);
+            const msg = JSON.parse(data.toString());
+            // var text = '{ "name":"John", "birth":"1986-12-14", "city":"New York"}';
+            if (msg.content) {
+            const obj = JSON.parse(msg.content.toString(), (key, value) => {
+                if (key === 'result') {
+                    return 1;
+                } else {
+                    return value;
+                }});
+            // const cont = JSON.parse(msg);
+            // console.log(obj.id);
+            const tr = this.tracerIds.get(obj.id);
+                if (tr) {
+                // console.log(json2.id);
+                tracer.setId(tr);
+                // const traceId = tracer.id;
+
+                tracer.scoped(async () => {
+
+                    tracer.recordServiceName(localServiceName);
+                    // tracer.recordBinary('result.id', obj.id);
+                    // tracer.recordBinary('spanIdrec', tracer.id.spanId);
+                    // tracer.recordBinary('dir', 'cl');
+                    tracer.recordAnnotation(new Annotation.ClientRecv());
+
+                });
+                this.channelIds.delete(obj.id);
+                this.tracerIds.delete(obj.id);
+                }
+        }
             if (channel) {
                 channel.handleMessage(message);
             } else {
+                // tracer.recordBinary('rpc.response', '100');
                 console.error('The ws channel does not exist', message.id);
             }
             this.onIncomingMessageActivityEmitter.fire(undefined);
@@ -118,6 +162,7 @@ export class WebSocketConnectionProvider {
             this.doOpenChannel(path, handler, options);
         } else {
             const openChannel = () => {
+
                 this.socket.removeEventListener('open', openChannel);
                 this.openChannel(path, handler, options);
             };
@@ -126,9 +171,11 @@ export class WebSocketConnectionProvider {
     }
 
     protected doOpenChannel(path: string, handler: (channel: WebSocketChannel) => void, options?: WebSocketOptions): void {
-        const id = this.channelIdSeq++;
-        const channel = this.createChannel(id);
-        this.channels.set(id, channel);
+        this.id = this.channelIdSeq++;
+        // this.index = Math.floor(Math.random() * (15 + 7000 + 1)) + 15;
+        this.index = 100 + this.indexSeq++;
+        const channel = this.createChannel(this.id, this.index);
+        this.channels.set(this.id, channel);
         channel.onClose(() => {
             if (this.channels.delete(channel.id)) {
                 const { reconnecting } = { reconnecting: true, ...options };
@@ -143,12 +190,44 @@ export class WebSocketConnectionProvider {
         channel.open(path);
     }
 
-    protected createChannel(id: number): WebSocketChannel {
-        return new WebSocketChannel(id, content => {
+    protected createChannel(id: number, index: number): WebSocketChannel {
+
+        const H = new WebSocketChannel(id, content => {
+
             if (this.socket.readyState < WebSocket.CLOSING) {
-                this.socket.send(content);
+                    const json = JSON.parse(content);
+                    tracer.setId(tracer.createChildId());
+                    const traceId = tracer.id;
+                    // console.log(json);
+                    if (json.content) {
+                    const json2 = JSON.parse(json.content);
+                    json2['parentId'] = tracer.id.traceId;
+                    json2['spanId'] = tracer.id.spanId;
+                    json2['sampled'] = tracer.id.sampled;
+                    json2['flags'] = tracer.id.flags;
+                    json.content = JSON. stringify(json2);
+                    const newcontent = JSON. stringify(json);
+                    // console.log(json2);
+                    tracer.scoped(async () => {
+                    tracer.recordServiceName(localServiceName);
+                    tracer.recordBinary('payload.id', json2.id);
+                    tracer.recordBinary('channel.id', id);
+                    tracer.recordBinary('spanId', tracer.id.spanId);
+                    tracer.recordBinary('dir', 'cl');
+                    tracer.recordBinary('method', json2.method);
+                    tracer.recordAnnotation(new Annotation.ClientSend());
+
+                });
+                    this.socket.send(newcontent);
+                    this.channelIds.set(json2.id, id);
+                    this.tracerIds.set(json2.id, traceId);
+                } else {
+                    this.socket.send(content);
+                }
+
             }
-        });
+        }, index);
+        return H;
     }
 
     protected createLogger(): Logger {
@@ -166,7 +245,7 @@ export class WebSocketConnectionProvider {
     /**
      * Creates a web socket for the given url
      */
-    protected createWebSocket(url: string): ReconnectingWebSocket {
+    protected createWebSocket(url: string): WebSocket {
         return new ReconnectingWebSocket(url, undefined, {
             maxReconnectionDelay: 10000,
             minReconnectionDelay: 1000,

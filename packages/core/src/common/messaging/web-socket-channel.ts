@@ -19,18 +19,20 @@
 import { IWebSocket } from 'vscode-ws-jsonrpc/lib/socket/socket';
 import { Disposable, DisposableCollection } from '../disposable';
 import { Emitter } from '../event';
-
 export class WebSocketChannel implements IWebSocket {
 
     static wsPath = '/services';
-
     protected readonly closeEmitter = new Emitter<[number, string]>();
     protected readonly toDispose = new DisposableCollection(this.closeEmitter);
+    // protected traceIds = new Map();
+    // public index = 1000;
 
     constructor(
         readonly id: number,
-        protected readonly doSend: (content: string) => void
-    ) { }
+        protected readonly doSend: (content: string) => void,
+        readonly index: number,
+        // readonly tracerid: any
+    ) {  }
 
     dispose(): void {
         this.toDispose.dispose();
@@ -42,7 +44,7 @@ export class WebSocketChannel implements IWebSocket {
         }
     }
 
-    handleMessage(message: WebSocketChannel.Message): void {
+       handleMessage(message: WebSocketChannel.Message): void {
         if (message.kind === 'ready') {
             this.fireOpen();
         } else if (message.kind === 'data') {
@@ -57,6 +59,8 @@ export class WebSocketChannel implements IWebSocket {
         this.doSend(JSON.stringify(<WebSocketChannel.OpenMessage>{
             kind: 'open',
             id: this.id,
+            index: this.index,
+            // tracerid: this.tracerid,
             path
         }));
     }
@@ -65,15 +69,20 @@ export class WebSocketChannel implements IWebSocket {
         this.checkNotDisposed();
         this.doSend(JSON.stringify(<WebSocketChannel.ReadyMessage>{
             kind: 'ready',
+            index: this.index,
+            // tracerid: this.tracerid,
             id: this.id
         }));
     }
 
     send(content: string): void {
+        // this.index = 1500;
         this.checkNotDisposed();
         this.doSend(JSON.stringify(<WebSocketChannel.DataMessage>{
             kind: 'data',
             id: this.id,
+            index: this.index,
+            // tracerid: this.tracerid,
             content
         }));
     }
@@ -87,6 +96,8 @@ export class WebSocketChannel implements IWebSocket {
         this.doSend(JSON.stringify(<WebSocketChannel.CloseMessage>{
             kind: 'close',
             id: this.id,
+            index: this.index,
+            // tracerid: this.tracerid,
             code,
             reason
         }));
@@ -101,6 +112,8 @@ export class WebSocketChannel implements IWebSocket {
         this.doSend(JSON.stringify(<WebSocketChannel.CloseMessage>{
             kind: 'close',
             id: this.id,
+            index: this.index,
+            // tracerid: this.tracerid,
             code,
             reason
         }));
@@ -151,20 +164,28 @@ export namespace WebSocketChannel {
     export interface OpenMessage {
         kind: 'open'
         id: number
+        index: number
+        // tracerid: any
         path: string
     }
     export interface ReadyMessage {
         kind: 'ready'
         id: number
+        // tracerid: any
+        index: number
     }
     export interface DataMessage {
         kind: 'data'
         id: number
+        // tracerid: any
         content: string
+        index: number
     }
     export interface CloseMessage {
         kind: 'close'
         id: number
+        index: number
+        // tracerid: any
         code: number
         reason: string
     }

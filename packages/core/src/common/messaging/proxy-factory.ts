@@ -21,6 +21,9 @@ import { ApplicationError } from '../application-error';
 import { Event, Emitter } from '../event';
 import { Disposable } from '../disposable';
 import { ConnectionHandler } from './handler';
+import { RpcTracer } from './RpcTracer';
+// const instrumentation = new Instrumentation.HttpClient({tracer, localServiceName, remoteServiceName});
+process.hrtime = require('browser-process-hrtime');
 
 export type JsonRpcServer<Client> = Disposable & {
     /**
@@ -101,7 +104,8 @@ export class JsonRpcProxyFactory<T extends object> implements ProxyHandler<T> {
 
     protected connectionPromiseResolve: (connection: MessageConnection) => void;
     protected connectionPromise: Promise<MessageConnection>;
-
+    public static traceIds = new Map();
+    traceLSP = new RpcTracer();
     /**
      * Build a new JsonRpcProxyFactory.
      *
@@ -131,11 +135,14 @@ export class JsonRpcProxyFactory<T extends object> implements ProxyHandler<T> {
      * response.
      */
     listen(connection: MessageConnection): void {
+        connection.trace(1, this.traceLSP);
         if (this.target) {
             for (const prop in this.target) {
                 if (typeof this.target[prop] === 'function') {
+                    // console.log(prop);
                     connection.onRequest(prop, (...args) => this.onRequest(prop, ...args));
                     connection.onNotification(prop, (...args) => this.onNotification(prop, ...args));
+
                 }
             }
         }

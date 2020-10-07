@@ -39,6 +39,11 @@
     "typescript": "~3.5.3",
     "uuid": "^3.2.1"
   },
+  "eslintConfig": {
+    "rules": {
+      "no-shadow": "on"
+    }
+  },
   "scripts": {
     "preinstall": "node-gyp install",
     "postinstall": "node scripts/post-install.js",

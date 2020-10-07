@@ -30,11 +30,18 @@ import { BackendApplicationContribution } from '../backend-application';
 import { MessagingService, WebSocketChannelConnection } from './messaging-service';
 import { ConsoleLogger } from './logger';
 import { ConnectionContainerModule } from './connection-container-module';
+const {Annotation, Tracer} = require('zipkin');
+const CLSContext = require('zipkin-context-cls');
+const {recorder} = require('recorder/recorder');
+const ctxImpl = new CLSContext('zipkin');
+// const xtxImpl = new zipkin.ExplicitContext();
+const localServiceName = 'Server';
+const tracer = new Tracer({ctxImpl, recorder: recorder(localServiceName), localServiceName});
+process.hrtime = require('browser-process-hrtime');
 
 import Route = require('route-parser');
 
 export const MessagingContainer = Symbol('MessagingContainer');
-
 @injectable()
 export class MessagingContribution implements BackendApplicationContribution, MessagingService {
 
@@ -50,6 +57,10 @@ export class MessagingContribution implements BackendApplicationContribution, Me
     protected webSocketServer: ws.Server | undefined;
     protected readonly wsHandlers = new MessagingContribution.ConnectionHandlers<ws>();
     protected readonly channelHandlers = new MessagingContribution.ConnectionHandlers<WebSocketChannel>();
+
+    index = Math.floor(Math.random() * (15 + 7000 + 1)) + 15;
+    tracerIds = new Map();
+    channelIds = new Map<number, Number>();
 
     @postConstruct()
     protected init(): void {
@@ -127,15 +138,18 @@ export class MessagingContribution implements BackendApplicationContribution, Me
         }
     }
 
-    protected handleChannels(socket: ws): void {
+        protected handleChannels(socket: ws): void {
         const channelHandlers = this.getConnectionChannelHandlers(socket);
         const channels = new Map<number, WebSocketChannel>();
+        // traceIds = new Map();
         socket.on('message', data => {
             try {
                 const message: WebSocketChannel.Message = JSON.parse(data.toString());
                 if (message.kind === 'open') {
                     const { id, path } = message;
+
                     const channel = this.createChannel(id, socket);
+
                     if (channelHandlers.route(path, channel)) {
                         channel.ready();
                         console.debug(`Opening channel for service path '${path}'. [ID: ${id}]`);
@@ -145,19 +159,87 @@ export class MessagingContribution implements BackendApplicationContribution, Me
                             channels.delete(id);
                         });
                     } else {
+                        tracer.scoped(() => {
+                        tracer.recordServiceName(localServiceName);
+                        tracer.recordBinary('Channel.dir', 'err');
+                        tracer.recordBinary('code', '601');
+                        tracer.recordBinary('Channel.pipe', id);
+                        tracer.recordBinary('spanId', tracer.id.spanId);
+                        tracer.recordBinary('path', path);
+                        tracer.recordAnnotation(new Annotation.ClientSend());
                         console.error('Cannot find a service for the path: ' + path);
+                    });
                     }
                 } else {
                     const { id } = message;
+                    const msg = JSON.parse(data.toString());
+                    // console.log(msg);
+                    // const regexp = /"(.*?)"/gus;
+                    // const x = regexp.exec(msg.content.toString())![2];
                     const channel = channels.get(id);
+                    // const rcv_tracer = traceIds.get(id);
+                    const z = JSON.parse(msg.content);
+                    // console.log(tracer.id.sampled);
                     if (channel) {
+                        // const x = new option.Some(z.traceId);
+                        // const y = new option.Some(z.spanId);
+                        // const w = new option.Some(z.parentId);
+                        // eslint-disable-next-line
+                        // const idtrace = new TraceId({
+                              // traceId: x,
+                              // parentId: w,
+                              // sampled: tracer.id.sampled,
+                            // });
+                          // tracer.setId(idtrace);
+                        // tracer.id.parentId = z.spanId;
+                        tracer.setId(tracer.createChildId());
+
+                        // tracer.setId(tracer.createChildId());
+                        const traceId = tracer.id;
+                        tracer.scoped(async () => {
+                        // const z = JSON.parse(msg.content);
                         channel.handleMessage(message);
+                        tracer.recordServiceName(localServiceName);
+                        tracer.recordBinary('payload.id', z.id);
+                        tracer.recordBinary('channel.id', id);
+                        tracer.recordBinary('method', z.method);
+                        tracer.recordBinary('spanId', tracer.id.spanId);
+                        tracer.recordBinary('dir', 'srv');
+                        // tracer.recordBinary('path', path);
+
+                        tracer.recordAnnotation(new Annotation.ClientSend());
+                    });
+                        this.tracerIds.set(z.id, traceId);
+                        this.channelIds.set(z.id, id);
+
+                    // };
                     } else {
+                        tracer.scoped(() => {
+
+                        tracer.recordServiceName(localServiceName);
+                        tracer.recordBinary('Channel.dir', 'err');
+                        tracer.recordBinary('code', '603');
+                        tracer.recordBinary('Channel.pipe', id);
+                        tracer.recordBinary('spanId', tracer.id.spanId);
+                        tracer.recordBinary('path', 'null');
+                        tracer.recordAnnotation(new Annotation.ClientSend());
                         console.error('The ws channel does not exist', id);
+                    });
+
                     }
                 }
             } catch (error) {
+                tracer.scoped(() => {
+                const message: WebSocketChannel.Message = JSON.parse(data.toString());
+                tracer.recordServiceName(localServiceName);
+                tracer.recordBinary('Channel.dir', 'err');
+                tracer.recordBinary('code', '605');
+                tracer.recordBinary('Channel.pipe', message.id);
+                tracer.recordBinary('spanId', tracer.id.spanId);
+                tracer.recordBinary('path', 'null');
+                tracer.recordAnnotation(new Annotation.ClientSend());
                 console.error('Failed to handle message', { error, data });
+            });
             }
         });
         socket.on('error', err => {
@@ -170,6 +252,7 @@ export class MessagingContribution implements BackendApplicationContribution, Me
                 channel.close(code, reason);
             }
             channels.clear();
+            this.tracerIds.clear();
         });
     }
 
@@ -190,16 +273,42 @@ export class MessagingContribution implements BackendApplicationContribution, Me
     }
 
     protected createChannel(id: number, socket: ws): WebSocketChannel {
-        return new WebSocketChannel(id, content => {
+
+        return new WebSocketChannel(id,
+        content => {
             if (socket.readyState < ws.CLOSING) {
                 socket.send(content, err => {
                     if (err) {
                         throw err;
                     }
                 });
+
+                const json = JSON.parse(content);
+                if (json.content) {
+                const json2 = JSON.parse(json.content);
+                const tr = this.tracerIds.get(json2.id);
+                if (tr) {
+                // console.log(json2.id);
+                tracer.setId(tr);
+                // const traceId = tracer.id;
+
+                tracer.scoped(async () => {
+
+                    // tracer.recordServiceName(localServiceName);
+                    // tracer.recordBinary('result.id', json2.id);
+                    // tracer.recordBinary('channel.id', id);
+                    // tracer.recordBinary('spanId', tracer.id.spanId);
+                    // tracer.recordBinary('dir', 'rcv');
+                    tracer.recordAnnotation(new Annotation.ClientRecv());
+                });
+                this.channelIds.delete(json2.id);
+                this.tracerIds.delete(json2.id);
+                }
             }
-        });
-    }
+
+            }
+        }, this.index);
+      }
 
 }
 export namespace MessagingContribution {
